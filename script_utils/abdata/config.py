@@ -84,10 +84,37 @@ class BuildConfig:
     pinned_pdb_ids: tuple[str, ...] = PINNED_PDB_IDS
     seed: int = 20261120
 
+    # ---- redundancy / clustering -------------------------------------------
+    # AbData's recipe (Origin-1 supplement S7.1): cluster antigens at 40%
+    # sequence identity and Fvs at 100%, then keep a single example per
+    # cluster-pair, chosen on resolution and interface contacts.  The same
+    # antigen clusters then define the cross-split homology exclusion, which is
+    # the part that makes a validation number mean anything: without it a
+    # val antigen can be 95% identical to a train antigen.
+    cluster_antigens: bool = True
+    antigen_cluster_identity: float = 0.4
+    antigen_cluster_coverage: float = 0.8
+    fv_cluster_identity: float = 1.0
+    fv_cluster_coverage: float = 0.8
+    # mmseqs --cov-mode 1 is coverage of the target, matching the repo's own
+    # `cluster_sequences` helper in proteinfoundation.utils.cluster_utils.
+    cluster_cov_mode: int = 1
+    # Heavy-atom distance defining an Fv/antigen contact.  Used to rank
+    # examples within a cluster-pair, and to record epitope size.
+    interface_contact_distance: float = 5.0
+    # Drop the non-representative members of each cluster-pair.  False keeps
+    # them in the parquet with `is_redundant` set, for inspection.
+    dedup_by_cluster: bool = True
+    # "" means: MMSEQS_EXEC from the environment, else `mmseqs` on PATH.
+    mmseqs_exec: str = ""
+
     # ---- splits ------------------------------------------------------------
-    # Random for the slice; the second build replaces this with temporal
-    # windows plus a deposition-date leak check.
-    split_mode: str = "random"             # "random" | "temporal"
+    # "cluster" splits on antigen homology groups so that no antigen cluster
+    # spans two splits.  "temporal" splits on deposition date and then applies
+    # the same homology exclusion in AbData's direction (filters defined on
+    # train are applied to val and test).  "random" is the original slice
+    # behaviour and leaks homologous antigens; it is kept only for comparison.
+    split_mode: str = "cluster"            # "cluster" | "temporal" | "random"
     n_val: int = 20
     n_test: int = 0
     temporal_val_from: str = "2022-01-01"  # split_mode="temporal" only
@@ -162,12 +189,26 @@ class BuildConfig:
         return self.cache / "annotations.parquet"
 
     @property
+    def clusters_parquet(self) -> Path:
+        """Stage 7 output: one row per written example, with its clusters."""
+        return self.cache / "clusters.parquet"
+
+    @property
+    def cluster_work(self) -> Path:
+        """Scratch directory for mmseqs inputs and outputs."""
+        return self.cache / "cluster"
+
+    def resolve_mmseqs(self) -> str:
+        """The mmseqs executable: explicit, else MMSEQS_EXEC, else PATH."""
+        return self.mmseqs_exec or os.environ.get("MMSEQS_EXEC") or "mmseqs"
+
+    @property
     def manifest_json(self) -> Path:
         return self.root / "build_manifest.json"
 
     def mkdirs(self) -> None:
         for p in (self.cache, self.cif_cache, self.structures,
-                  self.sidecars, self.parquet):
+                  self.sidecars, self.parquet, self.cluster_work):
             p.mkdir(parents=True, exist_ok=True)
 
     def to_dict(self) -> dict:

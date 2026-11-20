@@ -19,7 +19,8 @@
 #   python -m script_utils.abdata.s4_fetch_structures
 #   python -m script_utils.abdata.s5_annotate
 #   python -m script_utils.abdata.s6_write
-#   python -m script_utils.abdata.s7_parquet
+#   python -m script_utils.abdata.s7_cluster
+#   python -m script_utils.abdata.s8_parquet
 
 datamodule:
   _target_: proteinfoundation.datasets.structure_data.StructureDataModule
@@ -36,6 +37,18 @@ datamodule:
   batch_size: 4
   num_workers: 8
   pin_memory: true
+
+  # Cluster-balanced sampling over antigen homology groups (stage 7 writes the
+  # `cluster` column = `antigen_group`).  One epoch visits each group once and
+  # draws a different member each epoch, so the largest group -- 30 of the
+  # slice's 163 examples before dedup -- contributes one example per epoch
+  # instead of 18% of the gradient.  Dedup already removed the duplicates
+  # within a (group, Fv) pair; this handles the remaining imbalance, which is
+  # several distinct antibodies against the same antigen.
+  # Set cluster_column: null to sample examples uniformly instead.
+  cluster_column: cluster
+  cluster_sampling_mode: cluster-random
+  cluster_sampling_seed: 20261120
 
   # "framework" must be listed or _allocate_budget raises once the group has
   # any tokens (structure_data.py:569).  It comes after "target" so that the
