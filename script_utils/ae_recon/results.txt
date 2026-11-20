@@ -1,42 +1,58 @@
-Environment variable CCD_MIRROR_PATH not set. Will not be able to use function requiring this variable. To set it you may:
-  (1) add the line 'export VAR_NAME=path/to/variable' to your .bashrc or .zshrc file
-  (2) set it in your current shell with 'export VAR_NAME=path/to/variable'
-  (3) write it to a .env file in the root of the atomworks.io repository
-Environment variable PDB_MIRROR_PATH not set. Will not be able to use function requiring this variable. To set it you may:
-  (1) add the line 'export VAR_NAME=path/to/variable' to your .bashrc or .zshrc file
-  (2) set it in your current shell with 'export VAR_NAME=path/to/variable'
-  (3) write it to a .env file in the root of the atomworks.io repository
-/home/luke/code/Proteina-Complexa/.venv/lib/python3.12/site-packages/graphein/protein/config.py:217: PydanticDeprecatedSince20: Pydantic V1 style `@validator` validators are deprecated. You should migrate to Pydantic V2 style `@field_validator` validators, see the migration guide for more details. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.14/migration/
-  @validator("alt_locs")
-Failed to get GPU information from pynvml: Not Supported. Using default values for NVIDIA RTX 5000 Ada Generation Laptop GPU.
-GPU information: NVIDIA RTX A6000, 8, 6, 45, 84, 300, 2100
-device: cuda
-[11/18/26 20:13:52] INFO     No features requested        feature_factory.py:181
-['nlayers', 'token_dim', 'abs_coors', 'nheads', 'parallel_mha_transition', 'strict_feats', 'feats_seq', 'feats_cond_seq', 'dim_cond', 'idx_emb_dim', 'feats_pair_repr', 'seq_sep_dim', 'pair_repr_dim', 'update_pair_repr', 'update_pair_repr_every_n', 'use_tri_mult', 'use_qkln']
-[11/18/26 20:13:53] INFO     No features requested        feature_factory.py:181
+Frozen Proteina-Complexa autoencoder: side-chain + sequence reconstruction
+given the true backbone.  Re-run 2026-11-20 after a normalisation fix.
+
+CORRECTION (2026-11-20).  The earlier numbers in this file (Fv mean 0.042 A)
+were a factor sqrt(3) too low.  ae_recon_test.py divided the squared-deviation
+sum by 3 * n_atoms, which is the per-COORDINATE mean square, not the per-ATOM
+one -- `valid` is [n, 37], so valid.sum() already counts atoms.  Fixed; every
+figure below is from the corrected run.  The ratio (0.80x) is unchanged, since
+the error was a constant factor.
+
+WHAT THIS MEASURES.  This is a PARTIAL autoencoder.  decode(z, ca_coors_nm,
+mask) receives the TRUE CA coordinates, so the backbone is given, not
+reconstructed; the 8-dim per-residue latent carries the side chains and the
+sequence.  These RMSDs are therefore side-chain-and-sequence fidelity
+CONDITIONED ON A CORRECT BACKBONE.  That is the right quantity for our purpose
+-- the flow model's local_latents training label is exactly
+autoencoder.encode(batch)["z_latent"] -- but it is NOT "the AE reconstructs a
+structure to within X A", and should not be quoted that way.  RMSD is the root
+mean squared per-atom distance over all heavy atoms of each residue type
+(decoder.get_atom_mask()[aatype]), no superposition: inputs and reconstruction
+are already in the same frame.  The ~7.7-8.1 atoms/residue column confirms all
+heavy atoms are included, not just the 4-5 backbone ones.
+
 loaded ./ckpts/complexa_ae.ckpt, latent_dim=8
 
 ANTIBODY Fv (VH + VL):
-  1a2y Fv                n= 223  all-atom RMSD  0.037 A   median  0.043 A   seq recovery 100.0%
-  1bj1 Fv (bevacizumab)  n= 227  all-atom RMSD  0.038 A   median  0.045 A   seq recovery 100.0%
-  12e8 Fv                n= 234  all-atom RMSD  0.042 A   median  0.046 A   seq recovery 100.0%
-  1n8z Fv (trastuzumab)  n= 227  all-atom RMSD  0.050 A   median  0.058 A   seq recovery 100.0%
+  1a2y Fv                n= 223  atoms  1728 ( 7.7/res)  all-atom RMSD  0.064 A   median  0.044 A   seq recovery 100.0%
+  1bj1 Fv (bevacizumab)  n= 227  atoms  1776 ( 7.8/res)  all-atom RMSD  0.065 A   median  0.045 A   seq recovery 100.0%
+  12e8 Fv                n= 234  atoms  1809 ( 7.7/res)  all-atom RMSD  0.073 A   median  0.045 A   seq recovery 100.0%
+  1n8z Fv (trastuzumab)  n= 227  atoms  1747 ( 7.7/res)  all-atom RMSD  0.087 A   median  0.058 A   seq recovery 100.0%
 
 3-CHAIN COMPLEX (VH + VL + antigen):
-  1a2y Fv+lysozyme       n= 352  all-atom RMSD  0.049 A   median  0.043 A   seq recovery 100.0%
-  1bj1 Fv+VEGF           n= 321  all-atom RMSD  0.049 A   median  0.047 A   seq recovery 100.0%
-  1n8z Fv+HER2           n= 427  all-atom RMSD  0.062 A   median  0.063 A   seq recovery 100.0%
+  1a2y Fv+lysozyme       n= 352  atoms  2725 ( 7.7/res)  all-atom RMSD  0.085 A   median  0.044 A   seq recovery 100.0%
+  1bj1 Fv+VEGF           n= 321  atoms  2537 ( 7.9/res)  all-atom RMSD  0.083 A   median  0.046 A   seq recovery 100.0%
+  1n8z Fv+HER2           n= 427  atoms  3306 ( 7.7/res)  all-atom RMSD  0.107 A   median  0.063 A   seq recovery 100.0%
 
 4-CHAIN COMPLEX (two Fabs + two antigen copies):
-  1bj1 HLVW              n= 415  all-atom RMSD  0.046 A   median  0.046 A   seq recovery 100.0%
+  1bj1 HLVW              n= 415  atoms  3298 ( 7.9/res)  all-atom RMSD  0.081 A   median  0.047 A   seq recovery 100.0%
 
 NON-ANTIBODY controls:
-  1bj1_cropped           n=  94  all-atom RMSD  0.037 A   median  0.048 A   seq recovery 100.0%
-  1tnf_cropped           n= 146  all-atom RMSD  0.075 A   median  0.077 A   seq recovery 100.0%
+  1bj1_cropped           n=  94  atoms   761 ( 8.1/res)  all-atom RMSD  0.064 A   median  0.048 A   seq recovery 100.0%
+  1tnf_cropped           n= 146  atoms  1141 ( 7.8/res)  all-atom RMSD  0.130 A   median  0.078 A   seq recovery 100.0%
   1tnf_cropped_fixed     FAILED: ValueError: The file has 0 models, the given model 1 does not exist
-  1tnf_repacked          n= 146  all-atom RMSD  0.044 A   median  0.053 A   seq recovery 100.0%
+  1tnf_repacked          n= 146  atoms  1141 ( 7.8/res)  all-atom RMSD  0.075 A   median  0.052 A   seq recovery 100.0%
 
 ======================================================================
-antibody Fv : RMSD mean 0.042 A (n=4)   seq recovery 100.0%
-control     : RMSD mean 0.052 A (n=3)   seq recovery 100.0%
+antibody Fv : RMSD mean 0.072 A (n=4)   seq recovery 100.0%
+control     : RMSD mean 0.090 A (n=3)   seq recovery 100.0%
 ratio       : 0.80x
+
+READING.  Antibody Fvs reconstruct slightly BETTER than the non-antibody
+controls (0.80x), and sequence recovery is 100.0% on every input, so the frozen
+AE's latent space is not an Ig-fold bottleneck and does not need retraining or
+unfreezing for antibody work.  Larger assemblies degrade mildly (0.072 Fv ->
+0.085-0.107 for 3-chain complexes), tracking residue count rather than
+antibody-ness.  Median per-atom deviation stays at 0.044-0.063 A while RMSD is
+higher, i.e. the error is a small tail of atoms, not a uniform blur -- consistent
+with a few long or surface side chains being placed imperfectly.

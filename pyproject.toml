@@ -29,6 +29,11 @@ dependencies = [
     
     # Data processing
     "pandas>=2.3.0",
+    # Parquet engine for pandas. Every dataset config points `metadata_file` at
+    # a .parquet, so this is a hard requirement rather than an extra, and it was
+    # simply missing. Capped below 17 because pyarrow 17+ requires NumPy >= 2.0
+    # while numpy is pinned <2 above for Graphein compatibility.
+    "pyarrow>=16.1.0,<17",
     "scipy>=1.13.1,<2",
     "h5py",
     "xarray",

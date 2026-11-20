@@ -3,6 +3,20 @@
 Measures all-atom reconstruction RMSD and sequence recovery for antibody Fv
 structures vs non-antibody controls, to test whether the frozen AE's latent
 space represents Ig folds as faithfully as the folds it was trained on.
+
+IMPORTANT on what is and is not being measured.  This is a PARTIAL
+autoencoder: `decode(z, ca_coors_nm, mask)` is handed the TRUE CA coordinates,
+so the backbone is given, not reconstructed.  What the 8-dim per-residue latent
+has to carry is the side chains and the sequence.  The RMSD below is therefore
+side-chain-and-sequence fidelity CONDITIONED ON A CORRECT BACKBONE, which is
+exactly the quantity that matters when the flow model's `local_latents` label
+is `autoencoder.encode(batch)["z_latent"]` -- but it is not "the AE
+reconstructs a structure to within X A from scratch", and must not be quoted
+that way.
+
+RMSD convention: root mean squared per-ATOM distance, over all heavy atoms of
+each residue type (`decoder.get_atom_mask()[aatype]`), no superposition --
+inputs and reconstruction are already in the same frame.
 """
 
 import os
@@ -94,7 +108,10 @@ def run(model, name, path, specs, write_pdb=True):
     rec = dec["coors_nm"][0]
     valid = coord_mask & dec["atom_mask"][0].bool() & mask[:, None]
     diff = (rec - coords_nm) * valid[..., None]
-    rmsd_nm = torch.sqrt((diff**2).sum() / (valid.sum() * 3.0))
+    # valid is [n, 37], so valid.sum() already counts ATOMS.  RMSD is the root
+    # mean squared per-atom DISTANCE, i.e. divide by n_atoms -- dividing by
+    # 3*n_atoms gives per-coordinate RMS instead, which is a factor sqrt(3) low.
+    rmsd_nm = torch.sqrt((diff**2).sum() / valid.sum().clamp(min=1))
     rmsd_a = float(rmsd_nm) * 10.0
 
     per_atom = torch.sqrt(((rec - coords_nm) ** 2).sum(-1))[valid]
@@ -122,7 +139,8 @@ def run(model, name, path, specs, write_pdb=True):
                           os.path.join(OUT, f"{tag}_recon.pdb"), aatype=aa,
                           chain_index=ch, b_factors=bf, no_indexing=True, overwrite=True)
 
-    print(f"  {name:22s} n={n:4d}  all-atom RMSD {rmsd_a:6.3f} A   median {med_a:6.3f} A   seq recovery {rec_rate*100:5.1f}%")
+    print(f"  {name:22s} n={n:4d}  atoms {int(valid.sum()):5d} ({float(valid.sum())/max(n,1):4.1f}/res)  "
+          f"all-atom RMSD {rmsd_a:6.3f} A   median {med_a:6.3f} A   seq recovery {rec_rate*100:5.1f}%")
     return rmsd_a, rec_rate
 
 

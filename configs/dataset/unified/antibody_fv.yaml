@@ -1,0 +1,100 @@
+# Antibody Fv + antigen complexes, with framework sequence conditioning.
+#
+# Pipeline: trimmed mmCIF -> AtomArray -> atom37 Data -> atom37_transforms -> model
+#
+# Simple mode, not pipeline mode.  Pipeline mode would be needed to rehydrate an
+# atomworks IgAnnotation where the structure lives, but it effectively forces
+# `use_parse: true` (the complexa_ligand pipeline needs chain_iid, chain_entity,
+# pn_unit_entity and real CCD bond orders that load_any does not provide), and
+# that pipeline's FilterForProteinaLigandComplex keeps one randomly chosen
+# polymer chain when there are more than two chain ids.  VH, VL and antigen go
+# in; one chain comes out.  So the framework labels travel as a sidecar parquet
+# instead, keyed on (chain_id, res_id) -- both of which survive the atom37
+# conversion, unlike insertion codes.
+#
+# Build the inputs with:
+#   python -m script_utils.abdata.s1_fetch_summary
+#   python -m script_utils.abdata.s2_select
+#   python -m script_utils.abdata.s3_resolve
+#   python -m script_utils.abdata.s4_fetch_structures
+#   python -m script_utils.abdata.s5_annotate
+#   python -m script_utils.abdata.s6_write
+#   python -m script_utils.abdata.s7_cluster
+#   python -m script_utils.abdata.s8_parquet
+
+datamodule:
+  _target_: proteinfoundation.datasets.structure_data.StructureDataModule
+
+  # Two parquets rather than a positional split.  With val_metadata_file unset
+  # the module splits on iloc[:n_train], which is fine for a million-row corpus
+  # and not fine for a few hundred antibody complexes.
+  metadata_file: ${oc.env:DATA_PATH}/abdata/parquet/train.parquet
+  val_metadata_file: ${oc.env:DATA_PATH}/abdata/parquet/val.parquet
+  base_dir: ""  # paths in the parquet are absolute
+  path_column: path
+  id_column: example_id
+
+  batch_size: 4
+  num_workers: 8
+  pin_memory: true
+
+  # Cluster-balanced sampling over antigen homology groups (stage 7 writes the
+  # `cluster` column = `antigen_group`).  One epoch visits each group once and
+  # draws a different member each epoch, so the largest group -- 30 of the
+  # slice's 163 examples before dedup -- contributes one example per epoch
+  # instead of 18% of the gradient.  Dedup already removed the duplicates
+  # within a (group, Fv) pair; this handles the remaining imbalance, which is
+  # several distinct antibodies against the same antigen.
+  # Set cluster_column: null to sample examples uniformly instead.
+  cluster_column: cluster
+  cluster_sampling_mode: cluster-random
+  cluster_sampling_seed: 20261120
+
+  # "framework" must be listed or _allocate_budget raises once the group has
+  # any tokens (structure_data.py:569).  It comes after "target" so that the
+  # antigen is allocated first and a long framework block cannot starve it.
+  pad_group_priority: ["target", "framework"]
+
+  atom37_transforms:
+    - _target_: proteinfoundation.datasets.transforms.CoordsToNanometers
+    - _target_: proteinfoundation.datasets.transforms.GlobalRotationTransform
+
+    # Resolve the sidecar BEFORE the crop: _crop_graph (transforms.py:780)
+    # subsets every tensor whose leading dim is the residue count, so the
+    # per-residue masks ride through the crop for free and key resolution
+    # happens once, against the whole structure.
+    - _target_: proteinfoundation.datasets.antibody_transforms.FrameworkSidecarTransform
+      sidecar_path: ${oc.env:DATA_PATH}/abdata/sidecars/framework_sidecar.parquet
+      verify_identity: true
+      require_match: true
+
+    # The Fv arrives whole; only the antigen is cropped.  CroppingTransform2
+    # adopts a single chain as the binder, which would keep VH or VL but not
+    # both.
+    - _target_: proteinfoundation.datasets.antibody_transforms.AntibodyCroppingTransform
+      crop_size: 500
+      interface_threshold: 8.0
+      dist_mode: "bb_ca"
+      data_mode: "all-atom"
+      antibody_chain_ids: ["H", "L"]
+      target_spatial_crop_threshold: 15.0
+
+    # No ContactTransform: the framework is meant to be the only new
+    # conditioning signal in the run.  With epitope hotspots on as well, a good
+    # result would not say which one carried it.
+
+    - _target_: proteinfoundation.datasets.transforms.OpenFoldFrameTransform
+    - _target_: proteinfoundation.datasets.transforms.ChainBreakPerResidueTransform
+    - _target_: proteinfoundation.datasets.transforms.CenteringTransform
+      center_mode: "target"
+      data_mode: "all-atom"
+    - _target_: proteinfoundation.datasets.transforms.ExtractTargetCoordinatesTransform
+      compact_mode: true
+
+    # Compact the framework onto its own [k] axis and register the token group.
+    # Sequence-only (22 dims): supplying coordinates would supply a committed
+    # pose and hand the model most of the structure-prediction problem.
+    - _target_: proteinfoundation.datasets.antibody_transforms.ExtractFrameworkCoordinatesTransform
+      use_coords: false
+
+    - _target_: proteinfoundation.datasets.transforms.FilterTargetResiduesTransform

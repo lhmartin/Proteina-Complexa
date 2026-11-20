@@ -39,6 +39,24 @@ from proteinfoundation.nn.feature_factory.seq_feats import (
 N_FRAMEWORK_CHAIN_TYPES = 2
 
 
+class MissingFrameworkConditioning(RuntimeError):
+    """Raised when framework conditioning is required but absent from the batch.
+
+    The default behaviour of these features -- zeros plus a one-off
+    ``logger.warning`` -- makes a broken data path indistinguishable from the
+    scientific negative result the experiment exists to measure: a run that
+    silently conditions on nothing still trains, still logs a loss curve, and
+    still produces antibodies that ignore the supplied framework.  Since the
+    warning fires once per process and dataloader workers are separate
+    processes, it is easy to miss entirely.
+
+    ``require_framework_cond: True`` turns that into a crash on the first
+    batch.  The zero-filled path remains the default because the same modules
+    are used for conditioning dropout and for unconditioned inference, where
+    absent keys are correct.
+    """
+
+
 class FrameworkChainTypeSeqFeat(Feature):
     """One-hot over framework chain type (VH / VL).
 
@@ -47,8 +65,9 @@ class FrameworkChainTypeSeqFeat(Feature):
     no way to learn the VH/VL pairing geometry that defines an Fv.
     """
 
-    def __init__(self, **kwargs):
+    def __init__(self, require_framework_cond: bool = False, **kwargs):
         super().__init__(dim=N_FRAMEWORK_CHAIN_TYPES)
+        self.require_framework_cond = require_framework_cond
         self._has_logged = False
 
     def forward(self, batch):
@@ -57,6 +76,11 @@ class FrameworkChainTypeSeqFeat(Feature):
             oh = torch.nn.functional.one_hot(chain, num_classes=N_FRAMEWORK_CHAIN_TYPES)
             return oh.to(torch.float32)
 
+        if self.require_framework_cond:
+            raise MissingFrameworkConditioning(
+                "No framework_chain in batch and require_framework_cond=True. "
+                f"Batch keys: {sorted(batch.keys())}"
+            )
         b, n = self.extract_bs_and_n(batch)
         device = self.extract_device(batch)
         if not self._has_logged:
@@ -68,9 +92,10 @@ class FrameworkChainTypeSeqFeat(Feature):
 class FrameworkSequenceSeqFeat(Feature):
     """One-hot residue identity over framework positions."""
 
-    def __init__(self, **kwargs):
+    def __init__(self, require_framework_cond: bool = False, **kwargs):
         super().__init__(dim=20)
         self.seq_feat = ResidueTypeSeqFeat()
+        self.require_framework_cond = require_framework_cond
         self._has_logged = False
 
     def forward(self, batch):
@@ -82,6 +107,11 @@ class FrameworkSequenceSeqFeat(Feature):
                 }
             )
 
+        if self.require_framework_cond:
+            raise MissingFrameworkConditioning(
+                "No seq_framework/seq_framework_mask in batch and "
+                f"require_framework_cond=True. Batch keys: {sorted(batch.keys())}"
+            )
         b, n = self.extract_bs_and_n(batch)
         device = self.extract_device(batch)
         if not self._has_logged:
@@ -105,12 +135,13 @@ class FrameworkConcatSeqFeat(Feature):
             (default) the conditioning is sequence-only and carries no pose.
     """
 
-    def __init__(self, use_coords: bool = False, **kwargs):
+    def __init__(self, use_coords: bool = False, require_framework_cond: bool = False, **kwargs):
         super().__init__(dim=None)
         self.use_coords = use_coords
+        self.require_framework_cond = require_framework_cond
 
-        self.seq_feat = FrameworkSequenceSeqFeat()
-        self.chain_feat = FrameworkChainTypeSeqFeat()
+        self.seq_feat = FrameworkSequenceSeqFeat(require_framework_cond=require_framework_cond)
+        self.chain_feat = FrameworkChainTypeSeqFeat(require_framework_cond=require_framework_cond)
         self.dim = self.seq_feat.dim + self.chain_feat.dim  # 20 + 2 = 22
 
         if use_coords:
@@ -129,6 +160,11 @@ class FrameworkConcatSeqFeat(Feature):
         byte-identical to the unconditioned one, so a model trained with
         conditioning dropout sees exactly the inference-time unconditioned case.
         """
+        if self.require_framework_cond:
+            raise MissingFrameworkConditioning(
+                "Missing required framework data for FrameworkConcatSeqFeat and "
+                f"require_framework_cond=True. Batch keys: {sorted(batch.keys())}"
+            )
         if not self._has_logged:
             logger.warning("Missing required framework data for FrameworkConcatSeqFeat")
             self._has_logged = True

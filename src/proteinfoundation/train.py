@@ -424,6 +424,12 @@ def main(cfg_exp) -> None:
         gradient_clip_algorithm="norm",
         gradient_clip_val=1.0,
         limit_train_batches=cfg_exp.opt.get("limit_train_batches", None),
+        # A datamodule that supplies its own sampler (e.g. cluster-balanced
+        # sampling) must keep it: Lightning otherwise replaces it with a
+        # DistributedSampler under DDP and the custom sampling is silently
+        # discarded.  Such a sampler is responsible for its own rank
+        # partitioning.
+        use_distributed_sampler=not getattr(datamodule, "uses_custom_sampler", False),
     )
     # Create model, warm-up or last ckpt
     model, resume_ckpt_path = get_model_n_ckpt_resume(cfg_exp, ckpt_path_store)

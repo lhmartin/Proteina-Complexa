@@ -780,6 +780,10 @@ class StructureDataModule(L.LightningDataModule):
         val_filters: list[str] | None = None,
         pad_max_total_tokens: int | None = None,
         pad_group_priority: list[str] | None = None,
+        cluster_column: str | None = None,
+        cluster_sampling_mode: str = "cluster-random",
+        cluster_sampling_shuffle: bool = True,
+        cluster_sampling_seed: int = 0,
         **pipeline_kwargs,
     ):
         super().__init__()
@@ -802,10 +806,27 @@ class StructureDataModule(L.LightningDataModule):
         self.val_filters = val_filters
         self.pad_max_total_tokens = pad_max_total_tokens
         self.pad_group_priority = pad_group_priority
+        # Cluster-balanced training sampling.  Off (None) the train loader
+        # shuffles examples uniformly, which over-weights whichever cluster
+        # happens to be largest.
+        self.cluster_column = cluster_column
+        self.cluster_sampling_mode = cluster_sampling_mode
+        self.cluster_sampling_shuffle = cluster_sampling_shuffle
+        self.cluster_sampling_seed = cluster_sampling_seed
         self.pipeline_kwargs = pipeline_kwargs
 
         self.train_dataset = None
         self.val_dataset = None
+
+    @property
+    def uses_custom_sampler(self) -> bool:
+        """True when `train_dataloader` supplies its own sampler.
+
+        `Trainer` must then be built with `use_distributed_sampler=False`:
+        Lightning otherwise replaces a custom sampler with a
+        `DistributedSampler` under DDP, silently discarding cluster sampling.
+        """
+        return self.cluster_column is not None
 
     def setup(self, stage: str | None = None):
         # Load metadata
@@ -873,15 +894,39 @@ class StructureDataModule(L.LightningDataModule):
                 **self.pipeline_kwargs,
             )
 
+    def _train_sampler(self):
+        """A `MetadataClusterSampler` when `cluster_column` is set, else None."""
+        if self.cluster_column is None:
+            return None
+        from proteinfoundation.datasets.cluster_sampling import MetadataClusterSampler
+
+        metadata = self.train_dataset.metadata
+        if self.cluster_column not in metadata.columns:
+            raise KeyError(
+                f"cluster_column={self.cluster_column!r} is not a column of "
+                f"{self.metadata_file}; it has {list(metadata.columns)}. If "
+                "columns_to_load is set, add the cluster column to it."
+            )
+        return MetadataClusterSampler(
+            cluster_ids=metadata[self.cluster_column].tolist(),
+            mode=self.cluster_sampling_mode,
+            shuffle=self.cluster_sampling_shuffle,
+            drop_last=True,
+            seed=self.cluster_sampling_seed,
+        )
+
     def train_dataloader(self):
         collate_fn = make_collate_fn(
             pad_max_total_tokens=self.pad_max_total_tokens,
             pad_group_priority=self.pad_group_priority,
         )
+        sampler = self._train_sampler()
         return DataLoader(
             self.train_dataset,
             batch_size=self.batch_size,
-            shuffle=True,
+            sampler=sampler,
+            # DataLoader rejects shuffle=True together with a sampler.
+            shuffle=sampler is None,
             num_workers=self.num_workers,
             pin_memory=self.pin_memory,
             collate_fn=collate_fn,
