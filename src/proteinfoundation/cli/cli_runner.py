@@ -1639,6 +1639,12 @@ def _generate_env_sh(runtime: str, env_path: Path, env_sh_path: Path) -> None:
         '_ENVSH_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"',
         'source "$_ENVSH_DIR/.env"',
         "",
+        "# Export the paths that are plain assignments in .env.  `source .env`",
+        "# sets them as shell variables only, so without this no child process",
+        "# (python, a helper script, mmseqs) ever sees them.",
+        "export LOCAL_CODE_PATH LOCAL_DATA_PATH LOCAL_CHECKPOINT_PATH",
+        "export DATA_PATH CKPT_PATH",
+        "",
         f"# Override active tool paths for {runtime} runtime",
     ]
 
